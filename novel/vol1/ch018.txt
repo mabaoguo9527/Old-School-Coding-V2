@@ -1,79 +1,49 @@
 第18章 以一敌万
-
 CAS——不排队，反复试探，得手即走。以一人之力，敌万人之众。
-
 CHEP后第九天。
-
 马农的预言又一次成真了。
-
 三千人来了。
-
 不是一天之内来的。是逐渐的——像潮水。第七天八百人，第八天一千五百人，第九天的上午十点，连接数突破了三千。
-
 三个接入点排着长队。B栋一楼已经改造成了一个临时的"网吧"——二十台从附近办公室搜集来的台式机排成两排，每台前面坐着一个焦急等待发消息的人。蛇口和西丽的二级节点也满负荷运行。
-
 第十七章的优化撑住了八百人的洪峰。但三千人不是八百人的线性放大——它是指数级的复杂度增长。
-
 原因很简单：八百人的时候，大部分请求是"发消息"和"收消息"——读写比大概1:3。但三千人的时候，一个新的行为模式出现了——刷新。
-
 人们不停地刷新页面。一遍一遍。F5。等回复。没收到。再刷。
-
 马农看着监控里的请求日志，每秒请求量从昨天的200暴涨到了2400。其中70%是同一个接口的重复GET请求——用户刷新收件箱。
-
 不是八百人的三倍。是十二倍。
-
 上午十点半。第二次高并发危机。
-
 这次不是路由器的锁瓶颈——第十七章的无锁改造已经解决了那个问题。这次的瓶颈在更深的地方：消息存储。
-
 消息系统的数据存在一个ConcurrentHashMap里——key是用户名，value是消息列表。每次"收消息"请求到达，系统从Map里取出对应用户的消息列表，序列化成JSON返回。
-
 问题出在"取出"和"序列化"之间。
-
 三千用户每秒刷新八百次。每次刷新要从Map里取出一个List，遍历List生成JSON。如果某个用户有50条消息，每次序列化要遍历50次。
-
 八百次×50次 = 每秒四万次List遍历。
-
 ConcurrentHashMap的get操作是无锁的——O(1)。但List的遍历不是——它是O(n)。当List越来越长，遍历时间越来越久，线程占用时间越来越长，可用线程越来越少，其他请求开始排队……
-
 "不是锁的问题了。"马农看着线程dump说。"是计算量的问题。"
-
 这次没有BLOCKED线程。四十个工作线程全是RUNNABLE——全在忙。但忙的是同一件事：遍历消息列表生成JSON。
-
 纯计算瓶颈。
-
 马农在纸上画了一张图：
-
 ``
 当前：每次请求都重新序列化
   Client → GET /inbox → 遍历List(50) → 生成JSON → 返回
   Client → GET /inbox → 遍历List(50) → 生成JSON → 返回
   Client → GET /inbox → 遍历List(50) → 生成JSON → 返回
   （同一个用户3秒内刷3次，每次都重新算）
-
 优化后：缓存JSON，变化时才更新
   Client → GET /inbox → 返回缓存的JSON ← O(1)
   Client → GET /inbox → 返回缓存的JSON ← O(1)
   新消息到达 → 更新缓存JSON ← 只算一次
 `
-
 "以不变应万变。"马农说。"用户的收件箱在两次新消息之间是不变的。刷十次和刷一次看到的内容一样。那就只在内容变化时重新生成JSON，其他时候直接返回缓存。"
-
 他写了一个InboxCache：
-
 `java
 public class InboxCache {
-    
     // 每个用户的收件箱JSON缓存
-    private final ConcurrentHashMap<String, CachedInbox> cache = 
+    private final ConcurrentHashMap<String, CachedInbox> cache =
         new ConcurrentHashMap<>();
-    
     // 缓存条目：JSON字符串 + 版本号
     private static class CachedInbox {
         volatile String json;
         final AtomicLong version = new AtomicLong(0);
     }
-    
     // 读操作：CAS检查版本号，命中直接返回
     public String getInbox(String username) {
         CachedInbox cached = cache.get(username);
@@ -85,7 +55,6 @@ public class InboxCache {
         cache.computeIfAbsent(username, k -> new CachedInbox()).json = json;
         return json;
     }
-    
     // 新消息到达时：CAS更新版本号，标记缓存失效
     public void invalidate(String username) {
         CachedInbox cached = cache.get(username);
@@ -96,39 +65,28 @@ public class InboxCache {
     }
 }
 `
-
 核心是一个AtomicLong作为版本号。每次新消息到达，用CAS操作原子性地递增版本号，同时标记JSON缓存失效。下一次读操作发现缓存为null，重新生成。
-
 CAS——Compare-And-Swap。不排队、反复试探、得手即走。AtomicLong.incrementAndGet()底层调用的是CPU的CMPXCHG指令——一条硬件指令，原子性地比较并交换。比synchronized快一个数量级。
-
 但马农没有止步于此。
-
 "刷新的人太多。就算缓存命中，三千个用户每秒八百次GET请求，光是从ConcurrentHashMap里取缓存的开销也不小。"
-
 他做了第二个优化：请求合并。
-
 如果同一个用户在500毫秒内发起了多次GET /inbox请求，只有第一次真正执行，后续请求共享第一次的结果。
-
 `java
 // 请求合并——同一用户的重复请求只执行一次
-private final ConcurrentHashMap<String, CompletableFuture<String>> pendingRequests = 
+private final ConcurrentHashMap<String, CompletableFuture<String>> pendingRequests =
     new ConcurrentHashMap<>();
-
 public String getInboxMerged(String username) {
     // 尝试获取已有的pending请求
     CompletableFuture<String> existing = pendingRequests.get(username);
     if (existing != null && !existing.isDone()) {
         return existing.join();  // 等待已有请求的结果
     }
-    
     // 创建新请求（CAS：只有第一个线程成功放入）
     CompletableFuture<String> future = new CompletableFuture<>();
     CompletableFuture<String> prev = pendingRequests.putIfAbsent(username, future);
-    
     if (prev != null) {
         return prev.join();  // 别人先放了，用他的结果
     }
-    
     // 我是第一个——执行真正的查询
     try {
         String result = getInbox(username);
@@ -140,13 +98,9 @@ public String getInboxMerged(String username) {
     }
 }
 `
-
 putIfAbsent——CAS语义。多个线程同时尝试放入同一个key，只有一个能成功。成功的那个执行查询，其他的共享结果。
-
 以一敌万。一次查询，服务万人。
-
 部署完毕。效果立竿见影。
-
 `
 [STATUS] MessageBoard v2.0 (with InboxCache + Request Merging)
 ─────────────────────────────
@@ -158,33 +112,19 @@ Cache hit rate: 94%
 Request merge rate: 78%
 ─────────────────────────────
 `
-
 同样的2400 QPS。CPU从89%降到23%。p99从8.7秒降到12毫秒。
-
 94%的请求直接返回缓存——不需要遍历消息列表。78%的请求被合并——十个人同时刷新，只执行一次查询。
-
 剩余的6%缓存未命中——是真正有新消息到达触发的重新生成。这些才是"有意义的计算"。
-
 老李站在马农身后看完全过程。
-
 "你刚才写的那个CAS请求合并……"他斟酌了一下措辞。"就像一群人同时按电梯，但电梯只来一次，所有人都能坐上去？"
-
 "差不多。"马农说。"电梯来不来取决于有没有人按。第一个按的人触发电梯运行，后面按的人等着。电梯到了，所有人一起上。"
-
 "但如果等的人太多——"
-
 "电梯有容量限制。所以我加了500毫秒的窗口。每500毫秒清一次pending，开始新的一轮。"
-
 老李点头。他大概理解了。不是完全理解——CAS的底层他还吃不透——但他理解了"以一敌万"的核心思路：减少无意义的重复计算，让真正需要做的事只做一次。
-
 下午。
-
 连接数到了3,247。消息系统稳定运行。CPU 23%。内存健康。
-
 马农在终端前。他没有在写代码。
-
 他在看消息系统的统计数据。不是看消息内容——是看模式。
-
 `
 [Message Statistics] 2038-09-21 14:00:00
 Total users: 3,247
@@ -196,31 +136,20 @@ Top message keywords (anonymized frequency):
   "等我" - 出现1,654次
   "孩子" - 出现1,442次
 `
-
 平安。在哪。回家。等我。孩子。
-
 三千多人发了一万八千多条消息。出现最多的五个词，没有一个和技术有关。
-
 马农看了这些数字十秒钟。
-
 然后他关掉了统计界面。
-
 他打开vi。继续写代码。
-
 但在写下一行之前，他在注释里多加了一句话。不是技术注释。是他很少写的那种：
-
 `java
 // 这段代码每天处理18000条消息。
 // 每一条背后是一个等消息的人。
 // 不能慢。不能停。不能错。
 `
-
 他删掉了这三行注释。
-
 然后重新写了一行：
-
 `java
 // high-priority: zero-downtime
 ``
-
 他继续写代码了。
