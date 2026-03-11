@@ -1,0 +1,251 @@
+第30章 ABA陷阱
+
+值虽然回来了，但它已经不是原来那个值。
+
+CHEP后第三十八天。
+
+古法编程班第四周。并发编程。
+
+马农把这一周的主题从原计划的"综合实战"改成了"并发与锁"。原因很简单——903系统的用户数突破了七千。七千人同时使用的系统，每一个共享资源都是潜在的战场。
+
+"你们在第二幕见过synchronized。"马农在白板上写。"在第17章……不对，在之前的高并发优化里，你们见过我把synchronized换成volatile+CopyOnWrite。今天讲一个更精细的东西。"
+
+他在白板上写了三个字母：
+
+``
+CAS
+`
+
+"Compare-And-Swap。比较并交换。"他说。"第3章我在白板上讲过。今天你们自己写。"
+
+马农教CAS的方式和教科书不一样。他不从定义开始。他从一个bug开始。
+
+"赵天。"他说。"你昨天写的访问计数器。给我看一下。"
+
+赵天在练习中写了一个在线用户计数器——每次有人登录加一，退出减一。他用的是普通的int加synchronized：
+
+`java
+public class UserCounter {
+    private int count = 0;
+    
+    public synchronized void login() {
+        count++;
+    }
+    
+    public synchronized void logout() {
+        count--;
+    }
+    
+    public synchronized int getCount() {
+        return count;
+    }
+}
+`
+
+"这有什么问题？"赵天问。
+
+"功能没问题。"马农说。"性能有问题。"
+
+他在白板上画了一个图：
+
+`
+synchronized的问题：
+线程1: login() → 拿锁 → count++ → 释放锁
+线程2: login() → 等待... → 等待... → 拿锁 → count++ → 释放锁
+线程3: getCount() → 等待... → 等待... → 等待... → 拿锁 → 读count → 释放锁
+
+所有操作排队。一次只过一个。
+`
+
+"synchronized是铁索连环阵。安全。但笨重。"他说。"七千人的系统，每秒可能有几百次login/logout。全排队的话——性能崩了。"
+
+他擦掉了赵天的代码，写了一个新版本：
+
+`java
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class UserCounter {
+    private final AtomicInteger count = new AtomicInteger(0);
+    
+    public void login() {
+        count.incrementAndGet();
+    }
+    
+    public void logout() {
+        count.decrementAndGet();
+    }
+    
+    public int getCount() {
+        return count.get();
+    }
+}
+`
+
+"AtomicInteger。"马农说。"底层用CAS实现。不需要锁。不需要排队。每个线程自己尝试修改——成功了就走，失败了就重试。"
+
+"这就是CAS——以巧取胜。不排队，反复试探，得手即走。"
+
+"但CAS有一个陷阱。"马农说。
+
+他在白板上画了一个场景：
+
+`
+ABA问题——狸猫换太子
+
+初始状态：counter = 100
+
+线程A读取：value = 100（准备改成200）
+线程A被挂起......
+
+线程B执行：100 → 200（成功）
+线程B执行：200 → 100（又改回来了）
+
+线程A恢复：
+  CAS(expected=100, new=200)
+  比较：当前值=100，期望值=100，相等！
+  CAS成功！
+  
+但——线程A不知道这个100已经不是原来的100了。
+中间被改过又改回来了。
+`
+
+"这就是ABA。"马农说。"值虽然回来了，但它已经不是原来那个值。"
+
+刘韧皱了皱眉："这有什么问题吗？结果不是一样的吗？"
+
+"在计数器场景下没问题。"马农说。"但在链表操作、内存回收、银行转账——问题就大了。"
+
+他举了一个例子：
+
+`
+银行场景：
+你的余额 = 100元
+你要取50元
+
+线程A：读余额=100，准备CAS(100→50)
+线程A被挂起......
+
+线程B：有人给你转了50元 → 余额=150
+线程C：你的自动扣费 → 余额=100
+
+线程A恢复：CAS(100→50)成功！
+结果：余额=50
+
+但实际上：你应该有150-50=100元，不是50元。
+中间的转入被"吃掉"了。
+`
+
+903室安静了。
+
+"ABA就像有人偷偷把你钱包里的钱换了——金额没变，但里面的钞票不是原来那张了。如果你只看金额，你不会发现。但如果那张钞票上有一个你做的记号——你就知道被换过了。"
+
+"解决方案。"马农在白板上写。
+
+`java
+// 给每个值加一个版本号——防伪标签
+AtomicStampedReference<Integer> balance = 
+    new AtomicStampedReference<>(100, 0);  // 值=100, 版本=0
+`
+
+他引用了预设代码库CS-006的内容，在白板上完整展开：
+
+`java
+// 线程A读取
+int[] stampHolder = new int[1];
+Integer value = balance.get(stampHolder);  
+// value=100, stamp=0
+
+// 线程B和C操作后：值回到100，但stamp变成了2
+
+// 线程A尝试CAS
+boolean success = balance.compareAndSet(
+    100,   // 期望值
+    50,    // 新值
+    0,     // 期望版本
+    1      // 新版本
+);
+// 失败！因为版本不匹配（期望0，实际2）
+`
+
+"版本号就是防伪标签。"马农说。"值相同但版本不同——说明被动过。CAS不仅比较值，还比较版本。两个都匹配才能修改。"
+
+他看着学员们。
+
+"记住这个教训——不要只看表面。值一样不代表状态一样。代码世界里，最危险的bug不是崩溃——是看起来正确但实际上错了。"
+
+下午。练习时间。
+
+马农出了一道实战题：
+
+`
+练习：用AtomicStampedReference实现一个安全的库存系统
+- 入库和出库操作用CAS实现
+- 每次操作都带版本号
+- 打印操作日志（包含版本号变化）
+- 模拟并发场景：5个线程同时出库
+`
+
+林夕在写练习的时候遇到了一个问题——五个线程同时出库时，有的线程CAS失败了需要重试。但重试逻辑怎么写？
+
+她自己想了十分钟，写了一个while循环：
+
+`java
+public boolean withdraw(int amount) {
+    while (true) {
+        int[] stampHolder = new int[1];
+        Integer current = stock.get(stampHolder);
+        int stamp = stampHolder[0];
+        
+        if (current < amount) {
+            return false;  // 库存不足
+        }
+        
+        if (stock.compareAndSet(current, current - amount, stamp, stamp + 1)) {
+            log("出库 " + amount + "件, 版本 " + stamp + "→" + (stamp+1));
+            return true;
+        }
+        // CAS失败，重试
+    }
+}
+`
+
+马农看了她的代码。
+
+"自旋。"他说。"CAS失败就重试。这叫自旋锁。"
+
+"有问题吗？"
+
+"如果竞争非常激烈——比如一百个线程同时抢同一个资源——自旋会浪费大量CPU。"
+
+"那怎么办？"
+
+"指数退避。"马农在白板上加了一行：
+
+`java
+// 失败后等待随机时间再重试
+Thread.sleep(ThreadLocalRandom.current().nextLong(1, backoff));
+backoff = Math.min(backoff * 2, MAX_BACKOFF);
+`
+
+"每次失败，等待时间翻倍。避免所有线程同时重试撞在一起。"
+
+林夕点头。她把指数退避加进了代码里。
+
+那天晚上。马农在终端前。
+
+他在改903系统的一段代码——消息系统的已读计数器。之前用的是synchronized。七千用户的压力下，每天有四万多次已读操作。全用锁太慢了。
+
+他把它改成了AtomicLong。
+
+改完之后，他在旁边加了一行注释：
+
+`java
+// CAS无锁计数。ABA在这里不是问题——因为已读数只会递增，不会回退。
+// 如果未来有"撤回已读"的需求，需要改用AtomicStampedReference。
+``
+
+这行注释是写给未来维护者的。
+
+可能是林夕。可能是刘韧。可能是某个现在还在学for循环的人。
+
+他保存了文件。

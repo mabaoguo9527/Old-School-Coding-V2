@@ -1,0 +1,211 @@
+第17章 千军万马
+
+高并发的本质不是流量大——是所有人同时想过同一座桥。
+
+CHEP后第七天。
+
+灾难来了。
+
+不是地震、不是火灾、不是有人攻击903室。是比这些更危险的东西——流量。
+
+起因是区政府的一条公告。
+
+区政府通过903室的消息系统向全区发布了一条通知：
+
+``
+南山区应急公告（第七号）
+
+经与B栋903节点协调，即日起扩大通讯服务范围：
+1. 蛇口片区居民可前往蛇口体育中心接入点
+2. 西丽片区居民可前往西丽自来水厂接入点  
+3. 科技园片区居民继续前往B栋一楼
+4. 各接入点均可发送文字消息至区内其他用户
+
+请互相转告。
+`
+
+马农在昨天批准了这个扩展计划。赵刚和两个工程师花了两天，在蛇口和西丽各部署了一台从废弃办公室搜集来的服务器作为二级接入节点，通过无线网桥回连903室。
+
+马农预计的接入增长是：每天新增50-80人。按这个速度，现有架构扛得住。
+
+他预计错了。
+
+公告发出后两小时内，三个接入点同时涌入了超过八百人。
+
+上午十点。告警开始响——CPU 94%，请求队列堆积将近三千条，p99延迟超过12秒，三分之一DNS查询超时，三分之二认证请求503。
+
+马农看到这些数字的时候，眉头紧了。所有服务都在挣扎。不是服务器坏了——是所有人同时想过同一座桥，而桥只有一车道宽。
+
+"千军万马过独木桥。"马农说。
+
+他打开了SRV-1的线程状态：四十个工作线程里，三十个BLOCKED——七成五的线程在排队等锁。
+
+马农深吸一口气。这是经典的高并发瓶颈——线程争用。当大量请求同时到达，所有线程竞争同一把锁，大部分时间不是在干活，而是在等。
+
+他打开了线程dump，找到了瓶颈点——三十个线程全卡在EmergencyRouter.route()的同一行代码。马农找到了那行代码——是他自己写的，三天前的v1版本：synchronized (this)。一把大锁，所有线程进入route方法都要获取同一个对象锁，同一时刻只有一个线程能执行路由查找，其他的全部排队。
+
+在十个人用的时候，这把锁没有任何问题——竞争概率极低。但在八百人同时用的时候，这把锁就是独木桥。
+
+"铁索连环阵。"马农自言自语。"安全但笨重。"
+
+他知道该怎么修。他在写v1的时候就知道这把锁是个隐患。当时选择synchronized是因为简单、可靠、三秒钟就能写出来。在应急的最初四十八小时，"能跑"比"跑得快"更重要。
+
+但现在，"跑得快"已经成了生死问题。
+
+马农开始重写。
+
+`java
+// v3版：路由查找（无锁 + 读写分离）
+public class EmergencyRouter {
+    
+    // 路由表用volatile引用——读不需要锁
+    private volatile Map<String, String> routeTable;
+    
+    // 访问日志用ConcurrentLinkedQueue——无锁队列
+    private final ConcurrentLinkedQueue<String> accessLog = 
+        new ConcurrentLinkedQueue<>();
+    
+    public String route(String path) {
+        // 读操作：无锁。volatile保证读到最新版本
+        Map<String, String> table = this.routeTable;
+        String target = table.get(path);
+        if (target == null) {
+            target = table.get("/default");
+        }
+        
+        // 日志写入：无锁队列，CAS自旋入队
+        accessLog.offer(path + " -> " + target);
+        
+        return target;
+    }
+    
+    // 路由表更新：写时复制（Copy-On-Write）
+    public synchronized void updateRoute(String path, String target) {
+        Map<String, String> newTable = new HashMap<>(this.routeTable);
+        newTable.put(path, target);
+        this.routeTable = Collections.unmodifiableMap(newTable);
+        // volatile写 happens-before 后续volatile读
+        // 所有线程的下一次route()调用都会看到新表
+    }
+}
+`
+
+核心思路：读写分离。
+
+读操作（route方法）完全无锁。路由表的引用用volatile修饰，读线程通过volatile读获取最新的表引用，然后在不可变的Map上做查找——不可变对象天然线程安全，不需要锁。
+
+写操作（updateRoute方法）依然用synchronized——但写操作频率极低（只有管理员手动添加路由时才触发），而读操作是每个请求都触发。把锁从读路径上移除，吞吐量直接翻几十倍。
+
+访问日志从ArrayList换成了ConcurrentLinkedQueue——一个基于CAS操作的无锁队列。多个线程同时写入时不需要排队，每个线程原子性地把新元素挂到队列尾部。
+
+马农写完代码。编译。部署。热替换。
+
+整个过程七分钟。
+
+新版本上线后，马农刷新了监控：
+
+`
+[STATUS] EmergencyRouter v3.0
+Thread State:
+  RUNNABLE: 36 (90%) | WAITING: 4 (10%) | BLOCKED: 0 (0%)
+CPU: 41%
+Request queue: 23
+Response time p99: 87ms
+`
+
+BLOCKED：从30个降到0。
+p99延迟：从12秒降到87毫秒。
+CPU：从94%降到41%。
+
+独木桥变成了八车道高速公路。
+
+但马农没有松口气。
+
+"DNS。"他说。
+
+DNS服务也在堵。和路由器不同，DNS的瓶颈不是锁——是递归查询。每次DNS查找，如果本地缓存没命中，就要递归到上一级DNS。但上一级DNS不存在了（互联网没了）。递归查询会一直等到超时——默认五秒。
+
+八百个用户同时发起DNS查询，其中有一半会查到缓存里没有的域名（因为用户还在习惯性地访问互联网地址），每个查询等五秒超时——线程池瞬间堵死。
+
+"把递归超时从5秒改成500毫秒。"马农对老李说。"命中就命中，不命中直接返回NXDOMAIN。不等。"
+
+"用户会看到'域名不存在'的错误。"
+
+"本来就不存在。互联网没了。告诉他们只能访问内网地址。"
+
+老李改了配置。DNS的503率从34%降到了2%。
+
+认证服务。Session验证也堵了——每次验证都要查ConcurrentHashMap并校验过期时间。马农检查了一下，发现瓶颈不在HashMap（那个无锁的），而在System.currentTimeMillis()——高并发下这个系统调用有微妙的性能问题。
+
+他加了一个时间缓存：
+
+`java
+// 缓存当前时间——每100ms更新一次，减少系统调用
+private volatile long cachedTime = System.currentTimeMillis();
+
+{   // 初始化块：启动时间刷新线程
+    Thread ticker = new Thread(() -> {
+        while (true) {
+            cachedTime = System.currentTimeMillis();
+            try { Thread.sleep(100); } catch (Exception e) {}
+        }
+    });
+    ticker.setDaemon(true);
+    ticker.start();
+}
+`
+
+Session过期校验的精度从1毫秒降低到100毫秒——对认证来说完全够用。但系统调用的频率从"每个请求一次"降低到"每100毫秒一次"。
+
+Auth服务的503率从67%降到了0.3%。
+
+中午十二点。所有服务恢复稳定。
+
+连接用户：836人。
+消息系统：正常。
+路由：p99延迟<100ms。
+DNS：解析成功率98%。
+Auth：通过率99.7%。
+
+马农在白板上写了这一天的战报：
+
+`
+2038-09-19 高并发事件复盘：
+━━━━━━━━━━━━━━━━━━━━
+触发：区政府公告→2小时内涌入800+用户
+瓶颈：synchronized全局锁→75%线程BLOCKED
+修复：
+  Router: synchronized → volatile + CopyOnWrite (无锁)
+  DNS: 递归超时 5s → 500ms
+  Auth: System.currentTimeMillis() → 缓存时间
+结果：
+  p99: 12.3s → 87ms
+  CPU: 94% → 41%
+  503率: 67% → 0.3%
+━━━━━━━━━━━━━━━━━━━━
+教训：应急时代码可以用锁。但流量来了必须换。
+`
+
+他放下笔。
+
+七个工程师在旁边看着白板上的数字。老李说了一句："12秒到87毫秒……差了一百多倍。"
+
+"不是差一百多倍。"马农说。"是12秒的时候人们在等、在焦虑、在怀疑系统是不是又崩了。87毫秒的时候他们感觉不到任何延迟。技术指标的差距是一百多倍。但体验的差距是——有和没有。"
+
+他走回终端前。
+
+"接下来的问题："他头也不回地说，"八百人只是开始。如果明天来三千人呢？"
+
+没人回答。
+
+马农也没有回答。
+
+他只是在终端上打开了一个新文件，标题是：
+
+`
+/docs/scalability-plan-v1.md
+``
+
+千军万马来了。桥修好了。但桥能承受多少人，取决于下一轮加固。
+
+马农开始写。
