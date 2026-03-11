@@ -183,15 +183,15 @@
 
 ### 创作任务
 
-- [ ] T069 [A05] 创作第51章「三路诸侯」in `novel/vol2/ch051.md`——全国格局展示
-- [ ] T070 [A05] 创作第52章「北上列车」in `novel/vol2/ch052.md`——铁路信号修复
-- [ ] T071 [A05] 创作第53章「状态机之美」in `novel/vol2/ch053.md`——有限状态机（技术高光章）
-- [ ] T072 [P] [A05] 创作第54-56章 in `novel/vol2/ch054.md` ~ `ch056.md`——长沙会战+谈判+疑兵
-- [ ] T073 [A05] 创作第57-59章 in `novel/vol2/ch057.md` ~ `ch059.md`——武汉渡口+嵌入式+过江
-- [ ] T074 [A05] 创作第60-62章 in `novel/vol2/ch060.md` ~ `ch062.md`——暗网来信+师兄揭露+分歧
-- [ ] T075 [P] [A05] 创作第63-65章 in `novel/vol2/ch063.md` ~ `ch065.md`——陈博士+三方会谈+Fork
-- [ ] T076 [A05] 创作第66-70章 in `novel/vol2/ch066.md` ~ `ch070.md`——马门建立+等级体系+京城来电
-- [ ] T077 [A05] 第五幕自检：周崖/陈博士首次出场形象检查+三方格局清晰度+更新追踪表
+- [X] T069 [A05] 创作第51章「三路诸侯」in `novel/vol2/ch051.txt`——全国格局展示
+- [X] T070 [A05] 创作第52章「北上列车」in `novel/vol2/ch052.txt`——铁路信号修复
+- [X] T071 [A05] 创作第53章「状态机之美」in `novel/vol2/ch053.txt`——有限状态机（技术高光章）
+- [X] T072 [P] [A05] 创作第54-56章 in `novel/vol2/ch054.txt` ~ `ch056.txt`——长沙会战+谈判+疑兵
+- [X] T073 [A05] 创作第57-59章 in `novel/vol2/ch057.txt` ~ `ch059.txt`——武汉渡口+嵌入式+过江
+- [X] T074 [A05] 创作第60-62章 in `novel/vol2/ch060.txt` ~ `ch062.txt`——暗网来信+师兄揭露+分歧
+- [X] T075 [P] [A05] 创作第63-65章 in `novel/vol2/ch063.txt` ~ `ch065.txt`——陈博士+三方会谈+Fork
+- [X] T076 [A05] 创作第66-70章 in `novel/vol2/ch066.txt` ~ `ch070.txt`——马门建立+等级体系+京城来电
+- [X] T077 [A05] 第五幕自检：周崖/陈博士首次出场形象检查+三方格局清晰度+更新追踪表
 
 **Checkpoint**: 70章完成，卷二开局20章，三方格局落地。
 
@@ -205,12 +205,12 @@
 
 ### 创作任务
 
-- [ ] T078 [A06] 创作第71-75章 in `novel/vol2/ch071.md` ~ `ch075.md`——骨干网拓扑+逆向工程+删繁就简
-- [ ] T079 [A06] 创作第76-80章 in `novel/vol2/ch076.md` ~ `ch080.md`——Netty重写路由+压测+全国通讯恢复
-- [ ] T080 [A06] 创作第81-85章 in `novel/vol2/ch081.md` ~ `ch085.md`——幽灵流量+僵尸Origin+第二颗种子
-- [ ] T081 [A06] 创作第86-90章 in `novel/vol2/ch086.md` ~ `ch090.md`——北京行动+分布式团队+Spring Boot重生
-- [ ] T082 [A06] 创作第91-95章 in `novel/vol2/ch091.md` ~ `ch095.md`——微服务+熔断器+周崖邀请+拒绝
-- [ ] T083 [A06] 第六幕自检：Netty/Spring Boot代码准确性专项检查+更新追踪表
+- [X] T078 [A06] 创作第71-75章 in `novel/vol2/ch071.txt` ~ `ch075.txt`——骨干网拓扑+逆向工程+删繁就简
+- [X] T079 [A06] 创作第76-80章 in `novel/vol2/ch076.txt` ~ `ch080.txt`——Netty重写路由+压测+全国通讯恢复
+- [X] T080 [A06] 创作第81-85章 in `novel/vol2/ch081.txt` ~ `ch085.txt`——幽灵流量+僵尸Origin+第二颗种子
+- [X] T081 [A06] 创作第86-90章 in `novel/vol2/ch086.txt` ~ `ch090.txt`——北京行动+分布式团队+Spring Boot重生
+- [X] T082 [A06] 创作第91-95章 in `novel/vol2/ch091.txt` ~ `ch095.txt`——微服务+熔断器+周崖邀请+拒绝
+- [X] T083 [A06] 第六幕自检：Netty/Spring Boot代码准确性专项检查+更新追踪表
 
 **Checkpoint**: 95章完成，骨干网恢复，Spring Boot登场。
 
